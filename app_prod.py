@@ -156,11 +156,6 @@ class VisInputProcessor():
                 if hand_landmarks:
                     # each hand detected becomes a set of landmarks. For each hand detected:
                     for handLms, handed in zip(hand_landmarks, handedness):
-                    # for handLms, handed in hand_landmarks.multi_hand_landmarks:
-                        # for each id-landmark pair in this hand
-                        # for id, lm in enumerate(handLms.landmark):
-                        #     px, py = int(lm.x * frame_w), int(lm.y * frame_h)
-
                         mpDraw.draw_landmarks(frame, handLms, self.mpHands.HAND_CONNECTIONS)
 
                         # bounding rectangle brect is an array of x, y pos, and w, h
@@ -215,15 +210,19 @@ class VisInputProcessor():
         handed = handed.classification[0].index
 
         lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
+        #the first points here are X and Y for the base of the hand
         base_x, base_y = lms_list[0][0], lms_list[0][1]
 
         lms_ran = range(0, len(lms_list))
 
+        # ith entries are landmarks, [0] is the X, [1] is the Y
         lms_list = [[lms_list[i][0] - base_x, lms_list[i][1] - base_y] for i in lms_ran]
 
+        # give me the maximum value of a mapped absolute for each X and Y BUT DO NOT MODIFY THEM
         max_x = max(map(abs, [lms_list[i][0] for i in lms_ran]))
         max_y = max(map(abs, [lms_list[i][1] for i in lms_ran]))
 
+        # dividing negative by positive numbers is fine....
         lms_tform = [[lm[0] / max_x, lm[1] / max_y] for lm in lms_list]
 
         # insert the handed value at pos 0. Right == 1. Similar to func in app_harvest_dynamic

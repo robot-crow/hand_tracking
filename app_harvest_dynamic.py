@@ -18,17 +18,33 @@ class GestureHarvester():
         self.mode = 0
         self.gesture_class = 0
 
+        # I am a flag type attribute that tracks recording at a specific moment.
         self.rec = False
 
-
+        # mediapipe hand skeletons
         self.mpHands = mp.solutions.hands
         self.mpDraw = mp.solutions.drawing_utils
 
+        # csv save file locations
         self.static_csv_path = os.path.join(os.getcwd(), 'models/static_gesture/data/gesture.csv')
         self.dynamic_csv_path = os.path.join(os.getcwd(), 'models/dynamic_gesture/data/gesture.csv')
 
+        self.static_class_labels_path = 'models/static_gesture/static_class_labels.csv'
+        self.dynamic_class_labels_path = 'models/dynamic_gesture/dynamic_class_labels.csv'
+
+        with open(self.static_class_labels_path, encoding='utf-8-sig') as f:
+            static_class_labels = csv.reader(f)
+            self.static_class_labels = [row[0] for row in static_class_labels]
+
+        with open(self.dynamic_class_labels_path, encoding='utf-8-sig') as f:
+            dynamic_class_labels = csv.reader(f)
+            self.dynamic_class_labels = [row[0] for row in dynamic_class_labels]
+
+        print(self.dynamic_class_labels)
+        print(self.static_class_labels)
+
     def key_check(self):
-        # faster than waitkey at execution in this case
+        # faster than waitkey at execution in this case (weird but happy with it)
 
         if keyboard.is_pressed('q'):
             print('quitting')
@@ -64,6 +80,7 @@ class GestureHarvester():
         elif keyboard.is_pressed('0'):
             self.gesture_class = 0
 
+        # press space to engage 30 frames of recording
         if keyboard.is_pressed('space'):
             if self.mode != 0:
                 self.rec = True
@@ -75,6 +92,8 @@ class GestureHarvester():
         counter = 0
         counter_max = 20
         fps = 0
+
+        # I am a list because the average of 10 frames fps will be used
         fps_list = []
 
         rec_counter = 0
@@ -91,10 +110,10 @@ class GestureHarvester():
         # initialise video capture
         cap = cv2.VideoCapture(self.camera_index)
 
-        cap_x = self.cap_x
-        cap_y = self.cap_y
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cap_x)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cap_y)
+        # cap_x = self.cap_x
+        # cap_y = self.cap_y
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cap_x)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cap_y)
 
         if not cap.isOpened():
             print('Error: Unable to open camera.')
@@ -126,9 +145,18 @@ class GestureHarvester():
             multi_hand_landmarks = hand_results.multi_hand_landmarks
             multi_handedness = hand_results.multi_handedness
 
+            # if actually recording (space bar pressed, then scan next 30 frames for hands)
             if self.rec == True:
                 rec_counter = rec_counter + 1
-                print(rec_counter)
+
+                rec_str = 'Capturing gesture frame: ' + str(rec_counter)
+                cv2.putText(frame,  # where
+                            rec_str,  # what
+                            (5, 65),  # pos
+                            cv2.FONT_HERSHEY_PLAIN,  # font
+                            1,  # size
+                            (0, 0, 255),  # colour
+                            2)  # thickness
 
                 if rec_counter > rec_max:
                     self.rec = False
@@ -145,7 +173,7 @@ class GestureHarvester():
 
                     # get a bounding rectangle for lols
                     # brect is an array of x, y pos, and w, h
-                    brect = self.calc_bounding_rect(cap_x, cap_y, handLms)
+                    brect = self.calc_bounding_rect(self.cap_x, self.cap_y, handLms)
                     cv2.rectangle(frame, (brect[0], brect[1]), (brect[2], brect[3]), (0, 0, 0), 1)
                     hand_lr = handed.classification[0].label
                     cv2.putText(frame, hand_lr, (brect[0] + 5, brect[1] - 4),
@@ -155,8 +183,17 @@ class GestureHarvester():
                     proc_hand = self.proc_landmarks(handLms, handed)
 
                     if self.rec == True:
-
                         gesture_buffer.append(proc_hand)
+            else:
+                if self.rec == True:
+                    # no hand detected. Could be moving too fast, but still.
+                    self.rec = False
+                    rec_counter = 0
+                    # critical: wipe gesture buffer
+                    gesture_buffer = []
+
+                    print('Recording aborted. Failed to track hand and therefore could not gather gesture frames.')
+
 
             # show mode
             if self.mode == 0:
@@ -175,7 +212,19 @@ class GestureHarvester():
                         2)  # thickness
 
             if self.mode > 0:
-                gesture = 'gesture_class: ' + str(self.gesture_class)
+
+                gest_label = 'null'
+
+                if self.mode == 1:
+                    if self.gesture_class < len(self.static_class_labels):
+                        gest_label = self.static_class_labels[self.gesture_class]
+
+                elif self.mode == 2:
+                    if self.gesture_class < len(self.dynamic_class_labels):
+                        gest_label = self.dynamic_class_labels[self.gesture_class]
+
+                gesture = 'gesture_class: ' + str(self.gesture_class) + ' : ' + str(gest_label)
+
                 cv2.putText(frame,  # where
                             gesture,  # what
                             (5, 50),  # pos
@@ -262,6 +311,8 @@ class GestureHarvester():
         return lms_tform
 
     def log_csv(self, gesture_buffer):
+        # I require that a complete gesture is given - either as 30 frames of a static gesture
+        # or ALL 30 frames of a dynamic gesture. This is handled above at around 170.
         # Open the CSV file in write mode
         if self.mode == 1:
             with open(self.static_csv_path, mode='a', newline='') as file:
