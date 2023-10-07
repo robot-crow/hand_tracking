@@ -10,7 +10,8 @@ import keyboard
 import copy
 
 from models import StaticGestureClassifier
-
+from models import DynamicGestureClassifier
+from collections import deque
 
 class VisInputProcessor():
     def __init__(self, camera_index=0, cap_x=640, cap_y=480):
@@ -29,11 +30,18 @@ class VisInputProcessor():
         self.quit_display = mupr.Event()
 
         self.mpHands = mp.solutions.hands
+
         self.static_class_labels_path = 'models/static_gesture/static_class_labels.csv'
 
         with open(self.static_class_labels_path, encoding='utf-8-sig') as f:
             static_class_labels = csv.reader(f)
             self.static_class_labels = [row[0] for row in static_class_labels]
+
+        self.dynamic_class_labels_path = 'models/dynamic_gesture/dynamic_class_labels.csv'
+
+        with open(self.dynamic_class_labels_path, encoding='utf-8-sig') as f:
+            dynamic_class_labels = csv.reader(f)
+            self.dynamic_class_labels = [row[0] for row in dynamic_class_labels]
 
     def start_capture(self):
         self.capture_thread = mupr.Process(target=self._capture_frames)
@@ -99,7 +107,6 @@ class VisInputProcessor():
                               min_detection_confidence=0.5,
                               min_tracking_confidence=0.5,)
 
-
         while not self.quit_process.is_set():
             if not self.capture_queue.empty() and not self.process_queue.full():
                 frame = self.capture_queue.get(block=False)
@@ -110,6 +117,7 @@ class VisInputProcessor():
                 hand_results = hands.process(frame)
 
                 # processing end
+
 
                 # current time, time delta since last time, processing time
                 cTime = time.time()
@@ -129,9 +137,11 @@ class VisInputProcessor():
                     fps_list = []
 
                 # tuple in order:
-                # [0]=image, [1]=fps, [2]=coords hands, [3]=handedness
+                # [0]=image, [1]=fps, [2]=coords hands, [3]=handedness (0 is left hand)
 
                 frame_tuple = (frame, fps, hand_results.multi_hand_landmarks, hand_results.multi_handedness)
+
+                # push one to the queue
 
                 self.process_queue.put(frame_tuple, block=False)
 
@@ -142,6 +152,13 @@ class VisInputProcessor():
         mpDraw = mp.solutions.drawing_utils
 
         static_gesture_classifier = StaticGestureClassifier()
+        dynamic_gesture_classifier = DynamicGestureClassifier()
+
+        # dynamic gesture buffer - gesture size is ALWAYS 30 frames
+        empty_buf = [None] * 30
+        left_buf = deque(empty_buf.copy(), len(empty_buf))
+        right_buf = deque(empty_buf.copy(), len(empty_buf))
+
 
         while not self.quit_display.is_set():
             if not self.process_queue.empty():
@@ -152,6 +169,9 @@ class VisInputProcessor():
                 hand_landmarks = frame_tuple[2]
                 handedness = frame_tuple[3]
 
+                left_val = None
+                right_val = None
+
                 # the above returns false with no hands tracked
                 if hand_landmarks:
                     # each hand detected becomes a set of landmarks. For each hand detected:
@@ -161,18 +181,54 @@ class VisInputProcessor():
                         # bounding rectangle brect is an array of x, y pos, and w, h
                         brect = self.calc_bounding_rect(self.cap_x, self.cap_y, handLms)
                         cv2.rectangle(frame, (brect[0], brect[1]), (brect[2], brect[3]), (0, 0, 0), 1)
-                        hand_lr = handed.classification[0].label
+                        handlr = handed.classification[0].label
+
+                        # get handedness index. 1 is right, 0 is left.
+                        handed = handed.classification[0].index
 
                         # process hand
                         proc_hand = self.proc_landmarks(handLms, handed)
 
+                        match handed:
+                            case 0:
+                                left_val = proc_hand
+                            case 1:
+                                right_val = proc_hand
+
                         # classify static hand gesture
                         static_gesture = static_gesture_classifier(proc_hand)
                         
-                        hand_text = str(hand_lr) + ' : ' + str(self.static_class_labels[static_gesture])
+                        hand_text = str(handlr) + ' : ' + str(self.static_class_labels[static_gesture])
 
                         cv2.putText(frame, hand_text, (brect[0] + 5, brect[1] - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                else:
+                    left_val = None
+                    right_val = None
+
+                # dynamic buffer
+                # pop one from the queue
+                # push the left/right detection states in
+                left_buf.popleft()
+                left_buf.append(left_val)
+
+                right_buf.popleft()
+                right_buf.append(right_val)
+
+                if not any(item is None for item in left_buf):
+                    print('left queue valid')
+                    arr_L = np.array(left_buf)
+                    print(arr_L.shape)
+                    left_dynamic_gesture = dynamic_gesture_classifier(arr_L)
+                    print(left_dynamic_gesture)
+
+
+                if not any(item is None for item in right_buf):
+                    print('right queue valid')
+                    arr_R = np.array(right_buf)
+                    print(arr_R.shape)
+                    right_dynamic_gesture = dynamic_gesture_classifier(arr_R)
+                    print(right_dynamic_gesture)
 
 
                 proc_speed = 'proc_fps: ' + str(fps)
@@ -207,9 +263,9 @@ class VisInputProcessor():
         # I require that I actually be given a valid landmark object for a single hand
         # I discard the z values as they are not meaningful without actual depth measurements
         # I wish to normalise x and y such that any hand exists in a square space
-        handed = handed.classification[0].index
 
         lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
+
         #the first points here are X and Y for the base of the hand
         base_x, base_y = lms_list[0][0], lms_list[0][1]
 

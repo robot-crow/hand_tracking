@@ -180,6 +180,7 @@ class GestureHarvester():
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
                     # process hand
+                    handed = handed.classification[0].index
                     proc_hand = self.proc_landmarks(handLms, handed)
 
                     if self.rec == True:
@@ -288,7 +289,6 @@ class GestureHarvester():
         # I require that I actually be given a valid landmark object for a single hand
         # I discard the z values as they are not meaningful without actual depth measurements
         # I wish to normalise x and y such that any hand exists in a square space
-        handed = handed.classification[0].index
 
         lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
         base_x, base_y = lms_list[0][0], lms_list[0][1]
