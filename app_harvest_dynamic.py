@@ -40,9 +40,6 @@ class GestureHarvester():
             dynamic_class_labels = csv.reader(f)
             self.dynamic_class_labels = [row[0] for row in dynamic_class_labels]
 
-        print(self.dynamic_class_labels)
-        print(self.static_class_labels)
-
     def key_check(self):
         # faster than waitkey at execution in this case (weird but happy with it)
 
@@ -161,7 +158,10 @@ class GestureHarvester():
                 if rec_counter > rec_max:
                     self.rec = False
                     rec_counter = 0
+                    gesture_buffer = self.proc_gesture_buffer(gesture_buffer)
                     self.log_csv(gesture_buffer)
+
+                    # here is where a dynamic gesture should be processed
                     # critical: wipe gesture buffer
                     gesture_buffer = []
 
@@ -181,10 +181,13 @@ class GestureHarvester():
 
                     # process hand
                     handed = handed.classification[0].index
-                    proc_hand = self.proc_landmarks(handLms, handed)
+                    # proc_hand = self.proc_landmarks_static(handLms, handed)
+
+
 
                     if self.rec == True:
-                        gesture_buffer.append(proc_hand)
+                        buf_tuple = (handLms, handed)
+                        gesture_buffer.append(buf_tuple)
             else:
                 if self.rec == True:
                     # no hand detected. Could be moving too fast, but still.
@@ -285,53 +288,122 @@ class GestureHarvester():
 
         return [x, y, x + w, y + h]
 
-    def proc_landmarks(self, handLms, handed):
-        # I require that I actually be given a valid landmark object for a single hand
-        # I discard the z values as they are not meaningful without actual depth measurements
-        # I wish to normalise x and y such that any hand exists in a square space
+    def get_buffer_minmax(self, gesture_buffer):
+        min_x = 0
+        min_y = 0
+        max_x = 0
+        max_y = 0
 
-        lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
-        base_x, base_y = lms_list[0][0], lms_list[0][1]
+        for i, buf_tuple in enumerate(gesture_buffer):
+            handLms = buf_tuple[0]
+            handed = buf_tuple[1]
+            lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
+            lms_ran = range(0, len(lms_list))
 
-        lms_ran = range(0, len(lms_list))
+            # find the top left global coords of the gesture
+            x_ = [lms_list[i][0] for i in lms_ran]
+            y_ = [lms_list[i][1] for i in lms_ran]
 
-        lms_list = [[lms_list[i][0] - base_x, lms_list[i][1] - base_y] for i in lms_ran]
+            min_x_ = min(map(abs, x_))
+            min_y_ = min(map(abs, y_))
+            max_x_ = max(map(abs, x_))
+            max_y_ = max(map(abs, y_))
 
-        max_x = max(map(abs, [lms_list[i][0] for i in lms_ran]))
-        max_y = max(map(abs, [lms_list[i][1] for i in lms_ran]))
+            if i == 0:
+                min_x = min_x_
+                min_y = min_y_
+                max_x = max_x_
+                max_y = max_y_
+            else:
+                if min_x_ < min_x:
+                    min_x = min_x_
+                if min_y_ < min_y:
+                    min_y = min_y_
+                if max_x_ > max_x:
+                    max_x = max_x_
+                if max_y_ > max_y:
+                    max_y = max_y_
 
-        lms_tform = [[lm[0] / max_x, lm[1] / max_y] for lm in lms_list]
+        return min_x, min_y, max_x, max_y
 
-        # insert the handed value at pos 0. Right == 1
-        hand_meta = [self.gesture_class, handed]
-        lms_tform = np.insert(lms_tform, 0, hand_meta)
+    def proc_gesture_buffer(self, gesture_buffer):
+        gesture_buffer_tform = []
 
-        lms_tform = np.array(lms_tform).flatten().tolist()
+        match self.mode:
+            case 1:
+                # I require that I actually be given a valid landmark object for a single hand
+                # I discard the z values as they are not meaningful without actual depth measurements
+                # I wish to normalise x and y such that any hand exists in a square space
+                for buf_tuple in gesture_buffer:
+                    handLms = buf_tuple[0]
+                    handed = buf_tuple[1]
+                    lms_list = [[lm.x, lm.y] for lm in handLms.landmark]
+                    lms_ran = range(0, len(lms_list))
 
-        return lms_tform
+                    base_x, base_y = lms_list[0][0], lms_list[0][1]
+
+                    lms_list = [[lms_list[i][0] - base_x, lms_list[i][1] - base_y] for i in lms_ran]
+
+                    max_x = max(map(abs, [lms_list[i][0] for i in lms_ran]))
+                    max_y = max(map(abs, [lms_list[i][1] for i in lms_ran]))
+
+                    lms_tform = [[lm[0] / max_x, lm[1] / max_y] for lm in lms_list]
+
+                    # insert the handed value at pos 0. Right == 1
+                    hand_meta = [self.gesture_class, handed]
+                    lms_tform = np.insert(lms_tform, 0, hand_meta)
+                    lms_tform = np.array(lms_tform).flatten().tolist()
+
+                    gesture_buffer_tform.append(lms_tform)
+            case 2:
+                # first off we need the max xy and min xy across all frames
+                min_x, min_y, max_x, max_y = self.get_buffer_minmax(gesture_buffer.copy())
+
+                # subtract the min from the max to avoid stretching the gesture
+                max_x = max_x - min_x
+                max_y = max_y - min_y
+
+
+                for i, buf_tuple in enumerate(gesture_buffer):
+                    handLms = buf_tuple[0]
+                    handed = buf_tuple[1]
+                    lms_list = [[lm.x, lm.y] for lm in handLms.landmark]
+                    lms_ran = range(0, len(lms_list))
+
+                    lms_list = [[lms_list[i][0] - min_x, lms_list[i][1] - min_y] for i in lms_ran]
+                    lms_tform = [[lm[0] / max_x, lm[1] / max_y] for lm in lms_list]
+
+                    # insert the handed value at pos 0. Right == 1
+                    hand_meta = [self.gesture_class, handed]
+                    lms_tform = np.insert(lms_tform, 0, hand_meta)
+                    lms_tform = np.array(lms_tform).flatten().tolist()
+
+                    gesture_buffer_tform.append(lms_tform)
+
+            case _:
+                pass
+
+        return gesture_buffer_tform
+
 
     def log_csv(self, gesture_buffer):
         # I require that a complete gesture is given - either as 30 frames of a static gesture
         # or ALL 30 frames of a dynamic gesture. This is handled above at around 170.
         # Open the CSV file in write mode
-        if self.mode == 1:
-            with open(self.static_csv_path, mode='a', newline='') as file:
-                # Create a csv.writer object
-                csv_writer = csv.writer(file)
 
-                for proc_hand in gesture_buffer:
-                    # Write the list as a single row
-                    csv_writer.writerow(proc_hand)
+        match self.mode:
+            case 1:
+                path = self.static_csv_path
+            case 2:
+                path = self.dynamic_csv_path
 
-        elif self.mode == 2:
-            with open(self.dynamic_csv_path, mode='a', newline='') as file:
-                # Create a csv.writer object
-                csv_writer = csv.writer(file)
+        with open(path, mode='a', newline='') as file:
+            # Create a csv.writer object
+            csv_writer = csv.writer(file)
 
-                for proc_hand in gesture_buffer:
-                    # Write the list as a single row
-                    csv_writer.writerow(proc_hand)
-
+            for proc_hand in gesture_buffer:
+                # Write the list as a single row
+                csv_writer.writerow(proc_hand)
 
         return
 

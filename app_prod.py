@@ -191,9 +191,9 @@ class VisInputProcessor():
 
                         match handed:
                             case 0:
-                                left_val = proc_hand
+                                left_val = (handLms, handed)
                             case 1:
-                                right_val = proc_hand
+                                right_val = (handLms, handed)
 
                         # classify static hand gesture
                         static_gesture = static_gesture_classifier(proc_hand)
@@ -217,7 +217,8 @@ class VisInputProcessor():
 
                 if not any(item is None for item in left_buf):
                     print('left queue valid')
-                    arr_L = np.array(left_buf)
+                    arr_L = self.proc_gesture_buffer(left_buf)
+                    arr_L = np.array(arr_L)
                     print(arr_L.shape)
                     left_dynamic_gesture = dynamic_gesture_classifier(arr_L)
                     print(left_dynamic_gesture)
@@ -225,8 +226,10 @@ class VisInputProcessor():
 
                 if not any(item is None for item in right_buf):
                     print('right queue valid')
-                    arr_R = np.array(right_buf)
+                    arr_R = self.proc_gesture_buffer(right_buf)
+                    arr_R = np.array(arr_R)
                     print(arr_R.shape)
+
                     right_dynamic_gesture = dynamic_gesture_classifier(arr_R)
                     print(right_dynamic_gesture)
 
@@ -288,6 +291,71 @@ class VisInputProcessor():
         lms_tform = np.array(lms_tform).flatten().tolist()
 
         return lms_tform
+
+    def get_buffer_minmax(self, gesture_buffer):
+        min_x = 0
+        min_y = 0
+        max_x = 0
+        max_y = 0
+
+        for i, buf_tuple in enumerate(gesture_buffer):
+            handLms = buf_tuple[0]
+            handed = buf_tuple[1]
+            lms_list = [[lm.x, lm.y] for lm in handLms.landmark].copy()
+            lms_ran = range(0, len(lms_list))
+
+            # find the top left global coords of the gesture
+            x_ = [lms_list[i][0] for i in lms_ran]
+            y_ = [lms_list[i][1] for i in lms_ran]
+
+            min_x_ = min(map(abs, x_))
+            min_y_ = min(map(abs, y_))
+            max_x_ = max(map(abs, x_))
+            max_y_ = max(map(abs, y_))
+
+            if i == 0:
+                min_x = min_x_
+                min_y = min_y_
+                max_x = max_x_
+                max_y = max_y_
+            else:
+                if min_x_ < min_x:
+                    min_x = min_x_
+                if min_y_ < min_y:
+                    min_y = min_y_
+                if max_x_ > max_x:
+                    max_x = max_x_
+                if max_y_ > max_y:
+                    max_y = max_y_
+
+        return min_x, min_y, max_x, max_y
+
+    def proc_gesture_buffer(self, gesture_buffer):
+        gesture_buffer_tform = []
+        # first off we need the max xy and min xy across all frames
+        min_x, min_y, max_x, max_y = self.get_buffer_minmax(gesture_buffer.copy())
+
+        # subtract the min from the max to avoid stretching the gesture
+        max_x = max_x - min_x
+        max_y = max_y - min_y
+
+        for i, buf_tuple in enumerate(gesture_buffer):
+            handLms = buf_tuple[0]
+            handed = buf_tuple[1]
+            lms_list = [[lm.x, lm.y] for lm in handLms.landmark]
+            lms_ran = range(0, len(lms_list))
+
+            lms_list = [[lms_list[i][0] - min_x, lms_list[i][1] - min_y] for i in lms_ran]
+            lms_tform = [[lm[0] / max_x, lm[1] / max_y] for lm in lms_list]
+
+            # insert the handed value at pos 0. Right == 1
+            hand_meta = [handed]
+            lms_tform = np.insert(lms_tform, 0, hand_meta)
+            lms_tform = np.array(lms_tform).flatten().tolist()
+
+            gesture_buffer_tform.append(lms_tform)
+
+        return gesture_buffer_tform
 
     def close(self):
         self.stop_capture()
