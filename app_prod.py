@@ -7,11 +7,11 @@ import multiprocess as mupr
 
 import time
 import keyboard
-import copy
 
 from models import StaticGestureClassifier
 from models import DynamicGestureClassifier
 from collections import deque
+from collections import Counter
 
 class VisInputProcessor():
     def __init__(self, camera_index=0, cap_x=640, cap_y=480):
@@ -154,11 +154,12 @@ class VisInputProcessor():
         static_gesture_classifier = StaticGestureClassifier()
         dynamic_gesture_classifier = DynamicGestureClassifier()
 
-        # dynamic gesture buffer - gesture size is ALWAYS 30 frames
-        empty_buf = [None] * 30
+        # dynamic gesture buffer - gesture size is ALWAYS 30 frames.
+        # as dynamic gestures will need several scan passes, add 10 frames and
+        # use a moving window, take most common classfication for gesture
+        empty_buf = [None] * 40
         left_buf = deque(empty_buf.copy(), len(empty_buf))
         right_buf = deque(empty_buf.copy(), len(empty_buf))
-
 
         while not self.quit_display.is_set():
             if not self.process_queue.empty():
@@ -186,22 +187,41 @@ class VisInputProcessor():
                         # get handedness index. 1 is right, 0 is left.
                         handed = handed.classification[0].index
 
-                        # process hand
+                        # process static hand
                         proc_hand = self.proc_landmarks(handLms, handed)
 
+                        # handle dynamic buffer - these could be in ONE BUFFEr but I HAVENT TIME
+                        dynamic_gesture = 0
                         match handed:
                             case 0:
+                                # first, put this hand into left_val
                                 left_val = (handLms, handed)
+
+                                # now attempt dynamic gesture detection
+                                if not any(item is None for item in left_buf):
+                                    print('left queue valid')
+                                    dynamic_gesture = self.scan_buffer(left_buf, dynamic_gesture_classifier)
+
                             case 1:
+                                # first, put this hand into right_val
                                 right_val = (handLms, handed)
+
+                                # now attempt dynamic gesture detection
+                                if not any(item is None for item in right_buf):
+                                    print('right queue valid')
+                                    dynamic_gesture = self.scan_buffer(right_buf, dynamic_gesture_classifier)
 
                         # classify static hand gesture
                         static_gesture = static_gesture_classifier(proc_hand)
                         
-                        hand_text = str(handlr) + ' : ' + str(self.static_class_labels[static_gesture])
+                        hand_text_static = str(handlr) + ' : ' + str(self.static_class_labels[static_gesture])
+                        hand_text_dynamic = 'Gesture : ' + str(self.dynamic_class_labels[dynamic_gesture])
 
-                        cv2.putText(frame, hand_text, (brect[0] + 5, brect[1] - 4),
+                        cv2.putText(frame, hand_text_static, (brect[0] + 5, brect[1] - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+                        cv2.putText(frame, hand_text_dynamic, (brect[0] + 5, brect[1] - 54),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
                 else:
                     left_val = None
                     right_val = None
@@ -215,23 +235,14 @@ class VisInputProcessor():
                 right_buf.popleft()
                 right_buf.append(right_val)
 
-                if not any(item is None for item in left_buf):
-                    print('left queue valid')
-                    arr_L = self.proc_gesture_buffer(left_buf)
-                    arr_L = np.array(arr_L)
-                    print(arr_L.shape)
-                    left_dynamic_gesture = dynamic_gesture_classifier(arr_L)
-                    print(left_dynamic_gesture)
+                # if not any(item is None for item in left_buf):
+                #     print('left queue valid')
+                #     left_gesture = self.scan_buffer(left_buf, dynamic_gesture_classifier)
 
+                # if not any(item is None for item in right_buf):
+                #     print('right queue valid')
+                #     right_gesture = self.scan_buffer(right_buf, dynamic_gesture_classifier)
 
-                if not any(item is None for item in right_buf):
-                    print('right queue valid')
-                    arr_R = self.proc_gesture_buffer(right_buf)
-                    arr_R = np.array(arr_R)
-                    print(arr_R.shape)
-
-                    right_dynamic_gesture = dynamic_gesture_classifier(arr_R)
-                    print(right_dynamic_gesture)
 
 
                 proc_speed = 'proc_fps: ' + str(fps)
@@ -248,6 +259,7 @@ class VisInputProcessor():
                 cv2.waitKey(1)
 
         cv2.destroyWindow('output_img')
+
 
     def calc_bounding_rect(self, image_width, image_height, landmarks):
         # Extract landmark coordinates into a list of tuples
@@ -356,6 +368,23 @@ class VisInputProcessor():
             gesture_buffer_tform.append(lms_tform)
 
         return gesture_buffer_tform
+
+    # my job is to be called periodicially on a buffer and establish the most common dynamic gesture found
+    def scan_buffer(self, gesture_buffer, dynamic_gesture_classifier):
+        gesture_list = []
+        gesture_buffer_tform = self.proc_gesture_buffer(gesture_buffer)
+        # print(gesture_buffer_tform)
+
+        # for frame in gesture_buffer_tform:
+        window_size = 30
+        for i in range(0, len(gesture_buffer_tform) - window_size):
+
+            gesture_window = gesture_buffer_tform[i: i + window_size]
+            gesture = dynamic_gesture_classifier(gesture_window)
+            gesture_list.append(gesture)
+
+        gesture = Counter(gesture_list).most_common()[0][0]
+        return gesture
 
     def close(self):
         self.stop_capture()
